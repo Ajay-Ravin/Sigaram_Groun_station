@@ -1,0 +1,1056 @@
+#!/usr/bin/env python3
+"""
+Professional Aerospace Ground Station UI
+CanSat & Rocket Mission Control Dashboard
+Uses PyQt6 with real-time telemetry visualization
+"""
+
+import sys
+import math
+import random
+from datetime import datetime, timedelta
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
+from enum import Enum
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QStackedWidget, QPushButton, QLabel, QFrame, QGridLayout
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRect, QPoint, QSize, QPointF, QDateTime
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QLinearGradient
+from PyQt6.QtGui import QScreen
+import pyqtgraph as pg
+
+
+# ============================================================================
+# CONSTANTS & ENUMS
+# ============================================================================
+
+class Color:
+    """Aerospace theme colors with enhanced depth"""
+    # Core theme
+    DARK_BG = "#0A1428"  # Darker, more sophisticated
+    DARK_PANEL = "#0D1B2A"  # Slightly lighter for panels
+    DARK_PANEL_HOVER = "#132F4C"  # Hover state
+    
+    # Accent colors - more vibrant
+    ACCENT_CYAN = "#00D9FF"  # Brighter cyan
+    ACCENT_CYAN_DARK = "#0099CC"  # Darker variant
+    ACCENT_CYAN_LIGHT = "#80ECFF"  # Lighter variant
+    
+    MINT_GREEN = "#00FF88"  # Brighter mint
+    AMBER = "#FFAA00"  # Rich amber
+    BLUE = "#0066FF"  # Vivid blue
+    RED = "#FF2E2E"  # Brighter red
+    
+    # UI elements
+    BORDER = "#1A3A52"  # More visible borders
+    BORDER_HIGHLIGHT = "#00D9FF"  # Glowing borders
+    TEXT_PRIMARY = "#FFFFFF"
+    TEXT_SECONDARY = "#80CCFF"
+    
+    # Gradients (for future use)
+    GRADIENT_START = "#0A1428"
+    GRADIENT_END = "#132F4C"
+
+
+class RocketState(Enum):
+    """Rocket mission states"""
+    PRE = "PRE"
+    IGN = "IGN"
+    BOOST = "BOOST"
+    COAST = "COAST"
+    APOGEE = "APOGEE"
+    DESC = "DESC"
+
+
+class CanSatState(Enum):
+    """CanSat mission states"""
+    IDLE = "IDLE"
+    ARMED = "ARMED"
+    DEPLOY = "DEPLOY"
+    FALL = "FALL"
+    LAND = "LAND"
+    POST = "POST"
+
+
+@dataclass
+class RocketTelemetry:
+    """Rocket telemetry data"""
+    altitude: float = 0.0  # meters
+    velocity: float = 0.0  # m/s
+    acceleration: float = 0.0  # m/s²
+    temperature: float = 25.0  # °C
+    pressure: float = 1013.0  # hPa
+    latitude: float = 0.0
+    longitude: float = 0.0
+    gps_fix: str = "3D - 8 satellites"
+    battery: int = 87
+    signal: int = -62
+    state: RocketState = RocketState.PRE
+
+
+@dataclass
+class CanSatTelemetry:
+    """CanSat telemetry data"""
+    altitude: float = 0.0  # meters
+    velocity: float = 0.0  # m/s
+    pressure: float = 1013.0  # hPa
+    temperature: float = 25.0  # °C
+    latitude: float = 0.0
+    longitude: float = 0.0
+    satellite_count: int = 8
+    fix_type: str = "3D"
+    battery: int = 74
+    signal: int = -71
+    state: CanSatState = CanSatState.IDLE
+
+
+# ============================================================================
+# TELEMETRY DATA INTERFACE
+# ============================================================================
+
+class TelemetryDataInterface(QObject):
+    """Interface for receiving telemetry data from backend"""
+    
+    rocket_updated = pyqtSignal(RocketTelemetry)
+    cansat_updated = pyqtSignal(CanSatTelemetry)
+    
+    def __init__(self):
+        super().__init__()
+        self.rocket = RocketTelemetry()
+        self.cansat = CanSatTelemetry()
+        self.elapsed_time = 0
+        
+        self.rocket_history: List[RocketTelemetry] = []
+        self.cansat_history: List[CanSatTelemetry] = []
+    
+    def update_rocket_telemetry(self, telemetry: RocketTelemetry):
+        """Receive rocket telemetry from backend"""
+        self.rocket = telemetry
+        self.rocket_history.append(RocketTelemetry(**vars(self.rocket)))
+        if len(self.rocket_history) > 200:  # Keep last 200 points
+            self.rocket_history.pop(0)
+        self.rocket_updated.emit(self.rocket)
+    
+    def update_cansat_telemetry(self, telemetry: CanSatTelemetry):
+        """Receive CanSat telemetry from backend"""
+        self.cansat = telemetry
+        self.cansat_history.append(CanSatTelemetry(**vars(self.cansat)))
+        if len(self.cansat_history) > 200:  # Keep last 200 points
+            self.cansat_history.pop(0)
+        self.cansat_updated.emit(self.cansat)
+    
+    def update_elapsed_time(self, elapsed_seconds: float):
+        """Update mission elapsed time"""
+        self.elapsed_time = elapsed_seconds
+    
+    def get_rocket_history(self, last_n: int = 60) -> List[RocketTelemetry]:
+        """Get last N rocket telemetry points"""
+        return self.rocket_history[-last_n:]
+    
+    def get_cansat_history(self, last_n: int = 60) -> List[CanSatTelemetry]:
+        """Get last N CanSat telemetry points"""
+        return self.cansat_history[-last_n:]
+
+
+# ============================================================================
+# CUSTOM WIDGETS
+# ============================================================================
+
+class TelemetryGaugeWidget(QWidget):
+    """Semi-circular analog telemetry gauge with enhanced styling"""
+    
+    def __init__(self, label: str, unit: str, color: str, min_val: float = 0, max_val: float = 100):
+        super().__init__()
+        self.label = label
+        self.unit = unit
+        self.color = color
+        self.min_val = min_val
+        self.max_val = max_val
+        self.value = 0
+        
+        self.setMinimumSize(180, 150)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {Color.DARK_PANEL};
+                border: 2px solid {Color.BORDER};
+                border-radius: 8px;
+            }}
+        """)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    
+    def set_value(self, value: float):
+        """Update gauge value"""
+        self.value = max(self.min_val, min(self.max_val, value))
+        self.update()
+    
+    def paintEvent(self, event):
+        """Draw semi-circular gauge with enhanced styling"""
+        try:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            
+            w, h = self.width(), self.height()
+            center_x, center_y = w // 2, int(h * 0.65)
+            radius = 50
+            
+            # Draw glow effect for background arc
+            glow_color = QColor(self.color)
+            glow_color.setAlpha(20)
+            pen = QPen(glow_color, 8)
+            painter.setPen(pen)
+            painter.drawArc(center_x - radius - 4, center_y - radius - 4,
+                           (radius + 4) * 2, (radius + 4) * 2, 0, 180 * 16)
+            
+            # Draw background arc
+            pen = QPen(QColor(Color.BORDER), 2.5)
+            painter.setPen(pen)
+            painter.drawArc(center_x - radius, center_y - radius,
+                           radius * 2, radius * 2, 0, 180 * 16)
+            
+            # Draw value arc with gradient-like appearance
+            pen = QPen(QColor(self.color), 4)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            
+            # Calculate angle based on value
+            progress = (self.value - self.min_val) / (self.max_val - self.min_val) if (self.max_val - self.min_val) > 0 else 0
+            progress = max(0, min(1, progress))
+            angle = int(progress * 180 * 16)
+            painter.drawArc(center_x - radius, center_y - radius,
+                           radius * 2, radius * 2, 0, angle)
+            
+            # Draw needle with glow
+            needle_angle = progress * 180 - 90
+            needle_rad = math.radians(needle_angle)
+            needle_x = center_x + radius * math.cos(needle_rad)
+            needle_y = center_y + radius * math.sin(needle_rad)
+            
+            # Needle glow
+            glow_pen = QPen(QColor(self.color), 5)
+            glow_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            glow_color = QColor(self.color)
+            glow_color.setAlpha(40)
+            glow_pen.setColor(glow_color)
+            painter.setPen(glow_pen)
+            painter.drawLine(center_x, center_y, int(needle_x), int(needle_y))
+            
+            # Needle main line
+            pen = QPen(QColor(self.color), 2.5)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(center_x, center_y, int(needle_x), int(needle_y))
+            
+            # Draw center circle with gradient effect
+            painter.setBrush(QBrush(QColor(self.color)))
+            painter.setPen(QPen(QColor(Color.ACCENT_CYAN), 1))
+            painter.drawEllipse(center_x - 6, center_y - 6, 12, 12)
+            
+            # Draw inner circle for depth
+            painter.setBrush(QBrush(QColor(Color.DARK_PANEL)))
+            painter.drawEllipse(center_x - 3, center_y - 3, 6, 6)
+            
+            # Draw text with better styling
+            font = QFont("Monaco", 9)
+            font.setWeight(QFont.Weight.Bold)
+            painter.setFont(font)
+            painter.setPen(QPen(QColor(Color.TEXT_SECONDARY)))
+            
+            # Label
+            painter.drawText(QRect(0, 8, w, 18), Qt.AlignmentFlag.AlignCenter, self.label)
+            
+            # Value
+            font_size = QFont("Monaco", 10)
+            font_size.setWeight(QFont.Weight.Bold)
+            painter.setFont(font_size)
+            painter.setPen(QPen(QColor(self.color)))
+            value_text = f"{self.value:.1f}"
+            painter.drawText(QRect(0, center_y + 10, w, 24), 
+                            Qt.AlignmentFlag.AlignCenter, value_text)
+            
+            # Unit
+            font_unit = QFont("Monaco", 8)
+            painter.setFont(font_unit)
+            painter.setPen(QPen(QColor(Color.TEXT_SECONDARY)))
+            painter.drawText(QRect(0, center_y + 32, w, 16), 
+                            Qt.AlignmentFlag.AlignCenter, self.unit)
+            
+            painter.end()
+        except Exception as e:
+            value_text = f"{self.value:.1f} {self.unit}"
+            painter.drawText(QRect(0, center_y + 15, w, 30), 
+                            Qt.AlignmentFlag.AlignCenter, value_text)
+            
+            painter.end()
+        except Exception as e:
+            print(f"[ERROR] in TelemetryGaugeWidget.paintEvent: {e}")
+
+
+class StateBarWidget(QWidget):
+    """Mission state bar showing current phase with enhanced styling"""
+    
+    def __init__(self, states: List[str], current_state_color: str):
+        super().__init__()
+        self.states = states
+        self.current_idx = 0
+        self.current_state_color = current_state_color
+        
+        self.setMinimumHeight(45)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {Color.DARK_PANEL};
+                border: 1px solid {Color.BORDER};
+                border-radius: 6px;
+            }}
+        """)
+    
+    def set_state(self, state_name: str):
+        """Set current state by name"""
+        if state_name in self.states:
+            self.current_idx = self.states.index(state_name)
+            self.update()
+    
+    def paintEvent(self, event):
+        """Draw state bar with enhanced styling"""
+        try:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            
+            w, h = self.width(), self.height()
+            state_width = w // len(self.states)
+            
+            for i, state in enumerate(self.states):
+                x = i * state_width
+                
+                # Draw background
+                if i == self.current_idx:
+                    # Active state with glow
+                    glow_color = QColor(self.current_state_color)
+                    glow_color.setAlpha(40)
+                    painter.fillRect(x + 2, 2, state_width - 4, h - 4, QBrush(glow_color))
+                    
+                    # Active background
+                    painter.fillRect(x + 2, 2, state_width - 4, h - 4, 
+                                   QBrush(QColor(self.current_state_color)))
+                else:
+                    # Inactive state
+                    painter.fillRect(x + 2, 2, state_width - 4, h - 4, 
+                                   QBrush(QColor(Color.BORDER)))
+                
+                # Draw border
+                pen = QPen(QColor(Color.BORDER), 1)
+                painter.setPen(pen)
+                painter.drawRect(x, 0, state_width, h)
+                
+                # Draw text
+                font = QFont("Monaco", 9, QFont.Weight.Bold)
+                painter.setFont(font)
+                text_color = QColor(Color.TEXT_PRIMARY) if i == self.current_idx else QColor(Color.TEXT_SECONDARY)
+                painter.setPen(QPen(text_color))
+                painter.drawText(QRect(x, 0, state_width, h),
+                               Qt.AlignmentFlag.AlignCenter, state)
+            
+            painter.end()
+        except Exception as e:
+            pass
+    
+    def set_current_state_color(self, color: str):
+        """Update the highlight color"""
+        self.current_state_color = color
+        self.update()
+
+
+class StatusBarWidget(QWidget):
+    """Top status bar showing system status with enhanced styling"""
+    
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(60)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {Color.DARK_PANEL};
+                border-bottom: 2px solid {Color.BORDER_HIGHLIGHT};
+            }}
+        """)
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(20, 10, 20, 10)
+        layout.setSpacing(20)
+        
+        # Ground station ID
+        self.id_label = QLabel("🛰️ GROUNDSTN-01")
+        self.id_label.setFont(QFont("Monaco", 12, QFont.Weight.Bold))
+        self.id_label.setStyleSheet(f"color: {Color.TEXT_PRIMARY};")
+        
+        # Mission timer
+        self.timer_label = QLabel("T+00:00:00")
+        self.timer_label.setFont(QFont("Monaco", 13, QFont.Weight.Bold))
+        self.timer_label.setStyleSheet(f"color: {Color.ACCENT_CYAN};")
+        
+        # Right side container
+        self.status_label = QLabel()
+        self.status_label.setStyleSheet(f"color: {Color.TEXT_PRIMARY};")
+        self.status_label.setFont(QFont("Monaco", 9))
+        
+        layout.addWidget(self.id_label)
+        layout.addStretch()
+        layout.addWidget(self.timer_label)
+        layout.addStretch()
+        layout.addWidget(self.status_label)
+    
+    def update_status(self, rocket_battery: int, rocket_signal: int,
+                     cansat_battery: int, cansat_signal: int, elapsed_time: float):
+        """Update status information"""
+        # Update timer
+        mins = int(elapsed_time) // 60
+        secs = int(elapsed_time) % 60
+        self.timer_label.setText(f"T+{mins:02d}:{secs:02d}")
+        
+        # Update status with emoji indicators
+        status_text = (
+            f"🚀 ROCKET  🔋 {rocket_battery:.0f}%  📡 {rocket_signal:.0f} dBm  |  "
+            f"🛰️  CANSAT  🔋 {cansat_battery:.0f}%  📡 {cansat_signal:.0f} dBm"
+        )
+        self.status_label.setText(status_text)
+
+
+class SidebarWidget(QWidget):
+    """Left navigation sidebar with enhanced styling"""
+    
+    page_selected = pyqtSignal(int)
+    
+    def __init__(self):
+        super().__init__()
+        self.setMinimumWidth(210)
+        self.setMaximumWidth(210)
+        self.setStyleSheet(f"""
+            QWidget {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {Color.DARK_BG}, stop:1 {Color.DARK_PANEL});
+                border-right: 2px solid {Color.BORDER_HIGHLIGHT};
+            }}
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 25, 0, 25)
+        layout.setSpacing(10)
+        
+        # Navigation items
+        self.nav_buttons = []
+        nav_items = [
+            ("OVERVIEW", "Combined Status", 0, "📊"),
+            ("ROCKET", "Flight Data", 1, "🚀"),
+            ("CANSAT", "Deployment", 2, "🛰️"),
+        ]
+        
+        for title, subtitle, page_id, emoji in nav_items:
+            btn = self.create_nav_button(title, subtitle, page_id, emoji)
+            layout.addWidget(btn)
+            self.nav_buttons.append((btn, page_id))
+        
+        # Highlight first button
+        self.highlight_button(0)
+        
+        layout.addStretch()
+    
+    def create_nav_button(self, title: str, subtitle: str, page_id: int, emoji: str) -> QWidget:
+        """Create a navigation button with enhanced styling"""
+        widget = QWidget()
+        widget_layout = QVBoxLayout(widget)
+        widget_layout.setContentsMargins(15, 12, 15, 12)
+        widget_layout.setSpacing(3)
+        
+        title_label = QLabel(f"{emoji} {title}")
+        title_label.setFont(QFont("Monaco", 11, QFont.Weight.Bold))
+        title_label.setStyleSheet(f"color: {Color.ACCENT_CYAN};")
+        
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setFont(QFont("Monaco", 8))
+        subtitle_label.setStyleSheet(f"color: {Color.TEXT_SECONDARY};")
+        
+        widget_layout.addWidget(title_label)
+        widget_layout.addWidget(subtitle_label)
+        
+        widget.setCursor(Qt.CursorShape.PointingHandCursor)
+        widget.page_id = page_id
+        widget.title = title
+        
+        # Mouse click handling
+        widget.mousePressEvent = lambda e: self.on_nav_click(page_id, widget)
+        
+        return widget
+    
+    def on_nav_click(self, page_id: int, widget: QWidget):
+        """Handle navigation click"""
+        self.highlight_button(page_id)
+        self.page_selected.emit(page_id)
+    
+    def highlight_button(self, page_id: int):
+        """Highlight selected navigation button with enhanced effect"""
+        for btn, pid in self.nav_buttons:
+            if pid == page_id:
+                btn.setStyleSheet(f"""
+                    QWidget {{
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                            stop:0 {Color.DARK_PANEL_HOVER}, 
+                            stop:1 {Color.DARK_PANEL});
+                        border-left: 4px solid {Color.ACCENT_CYAN};
+                        border-radius: 4px;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet("background-color: transparent;")
+
+
+class TelemetryGraphWidget(QWidget):
+    """Real-time telemetry graph using PyQtGraph"""
+    
+    def __init__(self, title: str, color: str):
+        super().__init__()
+        self.title = title
+        self.color = color
+        self.data_points: List[float] = []
+        
+        self.setMinimumHeight(200)
+        self.setStyleSheet(f"background-color: {Color.DARK_PANEL}; border: 1px solid {Color.BORDER};")
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Title
+        title_label = QLabel(title)
+        title_label.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        title_label.setStyleSheet(f"color: {Color.ACCENT_CYAN};")
+        layout.addWidget(title_label)
+        
+        try:
+            # Create PyQtGraph PlotWidget
+            self.plot_widget = pg.PlotWidget()
+            self.plot_widget.setLabel('left', title, units='')
+            self.plot_widget.setLabel('bottom', 'Time', units='samples')
+            self.plot_widget.setTitle(title)
+            
+            # Style the plot
+            self.plot_widget.setBackground(QColor(Color.DARK_PANEL))
+            
+            # Configure grid
+            self.plot_widget.showGrid(True, True, alpha=0.3)
+            
+            # Create the line for plotting
+            self.line = self.plot_widget.plot(pen=pg.mkPen(color=self.color, width=2))
+            
+            layout.addWidget(self.plot_widget)
+        except Exception as e:
+            print(f"[ERROR] Failed to create TelemetryGraphWidget: {e}")
+            error_label = QLabel(f"Graph Error: {str(e)[:50]}")
+            error_label.setStyleSheet("color: #FF3333;")
+            layout.addWidget(error_label)
+    
+    def add_data_point(self, value: float):
+        """Add new data point"""
+        self.data_points.append(value)
+        if len(self.data_points) > 100:
+            self.data_points.pop(0)
+        self.update_chart()
+    
+    def update_chart(self):
+        """Update chart visualization"""
+        try:
+            if self.data_points and hasattr(self, 'line'):
+                self.line.setData(self.data_points)
+        except Exception as e:
+            print(f"[ERROR] Failed to update chart: {e}")
+
+
+# ============================================================================
+# PAGES
+# ============================================================================
+
+class OverviewPage(QWidget):
+    """Overview page showing rocket and CanSat status side-by-side"""
+    
+    def __init__(self, telemetry_interface: TelemetryDataInterface):
+        super().__init__()
+        self.telemetry_interface = telemetry_interface
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # Rocket section (left)
+        self.rocket_section = self.create_section("ROCKET", "rocket")
+        layout.addWidget(self.rocket_section)
+        
+        # CanSat section (right)
+        self.cansat_section = self.create_section("CANSAT", "cansat")
+        layout.addWidget(self.cansat_section)
+        
+        # Connect signals
+        telemetry_interface.rocket_updated.connect(self.update_rocket)
+        telemetry_interface.cansat_updated.connect(self.update_cansat)
+    
+    def create_section(self, title: str, section_type: str) -> QWidget:
+        """Create rocket or CanSat section"""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        
+        # Title
+        title_label = QLabel(title)
+        title_label.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
+        title_label.setStyleSheet(f"color: {Color.ACCENT_CYAN};")
+        layout.addWidget(title_label)
+        
+        # State bar
+        if section_type == "rocket":
+            states = [s.value for s in RocketState]
+            color = Color.MINT_GREEN
+            self.rocket_state_bar = StateBarWidget(states, color)
+            layout.addWidget(self.rocket_state_bar)
+            
+            # Gauges
+            gauge_layout = QGridLayout()
+            self.rocket_gauges = {
+                "Altitude": TelemetryGaugeWidget("Altitude", "m", Color.ACCENT_CYAN, 0, 6000),
+                "Velocity": TelemetryGaugeWidget("Velocity", "m/s", Color.MINT_GREEN, 0, 1000),
+                "Acceleration": TelemetryGaugeWidget("Acceleration", "m/s²", Color.AMBER, -20, 100),
+                "Temperature": TelemetryGaugeWidget("Temperature", "°C", Color.BLUE, -40, 80),
+            }
+            for i, (name, gauge) in enumerate(self.rocket_gauges.items()):
+                gauge_layout.addWidget(gauge, i // 2, i % 2)
+            layout.addLayout(gauge_layout)
+            
+            # Graphs
+            graph_layout = QGridLayout()
+            self.rocket_graphs = {
+                "Altitude": TelemetryGraphWidget("Altitude Trace", Color.ACCENT_CYAN),
+                "Velocity": TelemetryGraphWidget("Velocity Trace", Color.MINT_GREEN),
+            }
+            for i, (name, graph) in enumerate(self.rocket_graphs.items()):
+                graph_layout.addWidget(graph, 0, i)
+            layout.addLayout(graph_layout)
+        
+        else:  # CanSat
+            states = [s.value for s in CanSatState]
+            color = Color.BLUE
+            self.cansat_state_bar = StateBarWidget(states, color)
+            layout.addWidget(self.cansat_state_bar)
+            
+            # Gauges
+            gauge_layout = QGridLayout()
+            self.cansat_gauges = {
+                "Altitude": TelemetryGaugeWidget("Altitude", "m", Color.ACCENT_CYAN, 0, 2000),
+                "Velocity": TelemetryGaugeWidget("Velocity", "m/s", Color.MINT_GREEN, -100, 200),
+                "Pressure": TelemetryGaugeWidget("Pressure", "hPa", Color.AMBER, 600, 1200),
+                "Temperature": TelemetryGaugeWidget("Temperature", "°C", Color.BLUE, -40, 80),
+            }
+            for i, (name, gauge) in enumerate(self.cansat_gauges.items()):
+                gauge_layout.addWidget(gauge, i // 2, i % 2)
+            layout.addLayout(gauge_layout)
+            
+            # Graphs
+            graph_layout = QGridLayout()
+            self.cansat_graphs = {
+                "Altitude": TelemetryGraphWidget("Altitude Trace", Color.ACCENT_CYAN),
+                "Pressure": TelemetryGraphWidget("Pressure Trace", Color.AMBER),
+            }
+            for i, (name, graph) in enumerate(self.cansat_graphs.items()):
+                graph_layout.addWidget(graph, 0, i)
+            layout.addLayout(graph_layout)
+        
+        return container
+    
+    def update_rocket(self, telemetry: RocketTelemetry):
+        """Update rocket data"""
+        self.rocket_state_bar.set_state(telemetry.state.value)
+        self.rocket_gauges["Altitude"].set_value(telemetry.altitude)
+        self.rocket_gauges["Velocity"].set_value(telemetry.velocity)
+        self.rocket_gauges["Acceleration"].set_value(telemetry.acceleration)
+        self.rocket_gauges["Temperature"].set_value(telemetry.temperature)
+        
+        self.rocket_graphs["Altitude"].add_data_point(telemetry.altitude)
+        self.rocket_graphs["Velocity"].add_data_point(telemetry.velocity)
+    
+    def update_cansat(self, telemetry: CanSatTelemetry):
+        """Update CanSat data"""
+        self.cansat_state_bar.set_state(telemetry.state.value)
+        self.cansat_gauges["Altitude"].set_value(telemetry.altitude)
+        self.cansat_gauges["Velocity"].set_value(telemetry.velocity)
+        self.cansat_gauges["Pressure"].set_value(telemetry.pressure)
+        self.cansat_gauges["Temperature"].set_value(telemetry.temperature)
+        
+        self.cansat_graphs["Altitude"].add_data_point(telemetry.altitude)
+        self.cansat_graphs["Pressure"].add_data_point(telemetry.pressure)
+
+
+class RocketDetailPage(QWidget):
+    """Detailed rocket telemetry page"""
+    
+    def __init__(self, telemetry_interface: TelemetryDataInterface):
+        super().__init__()
+        self.telemetry_interface = telemetry_interface
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # Title
+        title_label = QLabel("ROCKET TELEMETRY DETAIL")
+        title_label.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
+        title_label.setStyleSheet(f"color: {Color.ACCENT_CYAN};")
+        layout.addWidget(title_label)
+        
+        # State bar
+        states = [s.value for s in RocketState]
+        self.state_bar = StateBarWidget(states, Color.MINT_GREEN)
+        layout.addWidget(self.state_bar)
+        
+        # Main content
+        content_layout = QHBoxLayout()
+        
+        # Left: Gauges
+        gauge_container = QWidget()
+        gauge_layout = QGridLayout(gauge_container)
+        self.gauges = {
+            "Altitude": TelemetryGaugeWidget("Altitude", "m", Color.ACCENT_CYAN, 0, 6000),
+            "Velocity": TelemetryGaugeWidget("Velocity", "m/s", Color.MINT_GREEN, 0, 1000),
+            "Acceleration": TelemetryGaugeWidget("Acceleration", "m/s²", Color.AMBER, -20, 100),
+            "Pressure": TelemetryGaugeWidget("Pressure", "hPa", Color.AMBER, 500, 1100),
+            "Temperature": TelemetryGaugeWidget("Temperature", "°C", Color.BLUE, -40, 80),
+        }
+        for i, (name, gauge) in enumerate(self.gauges.items()):
+            gauge_layout.addWidget(gauge, i // 3, i % 3)
+        
+        content_layout.addWidget(gauge_container, 1)
+        
+        # Right: GPS Panel
+        gps_panel = self.create_gps_panel()
+        content_layout.addWidget(gps_panel, 1)
+        
+        layout.addLayout(content_layout)
+        
+        # Bottom: Graphs
+        graph_layout = QGridLayout()
+        self.graphs = {
+            "Altitude": TelemetryGraphWidget("Altitude", Color.ACCENT_CYAN),
+            "Velocity": TelemetryGraphWidget("Velocity", Color.MINT_GREEN),
+            "Acceleration": TelemetryGraphWidget("Acceleration", Color.AMBER),
+            "Pressure": TelemetryGraphWidget("Pressure", Color.AMBER),
+        }
+        for i, (name, graph) in enumerate(self.graphs.items()):
+            graph_layout.addWidget(graph, i // 2, i % 2)
+        layout.addLayout(graph_layout, 2)
+        
+        # Connect signals
+        telemetry_interface.rocket_updated.connect(self.update_data)
+    
+    def create_gps_panel(self) -> QWidget:
+        """Create GPS information panel"""
+        panel = QFrame()
+        panel.setStyleSheet(f"background-color: {Color.DARK_PANEL}; border: 1px solid {Color.BORDER};")
+        
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+        
+        title = QLabel("GPS POSITION")
+        title.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {Color.ACCENT_CYAN};")
+        layout.addWidget(title)
+        
+        self.lat_label = QLabel("LAT 0.0000°N")
+        self.lat_label.setFont(QFont("Consolas", 10))
+        self.lat_label.setStyleSheet("color: #FFFFFF;")
+        layout.addWidget(self.lat_label)
+        
+        self.lon_label = QLabel("LON 0.0000°E")
+        self.lon_label.setFont(QFont("Consolas", 10))
+        self.lon_label.setStyleSheet("color: #FFFFFF;")
+        layout.addWidget(self.lon_label)
+        
+        self.fix_label = QLabel("FIX 3D - 8 satellites")
+        self.fix_label.setFont(QFont("Consolas", 10))
+        self.fix_label.setStyleSheet(f"color: {Color.MINT_GREEN};")
+        layout.addWidget(self.fix_label)
+        
+        layout.addStretch()
+        
+        return panel
+    
+    def update_data(self, telemetry: RocketTelemetry):
+        """Update displayed data"""
+        self.state_bar.set_state(telemetry.state.value)
+        
+        self.gauges["Altitude"].set_value(telemetry.altitude)
+        self.gauges["Velocity"].set_value(telemetry.velocity)
+        self.gauges["Acceleration"].set_value(telemetry.acceleration)
+        self.gauges["Pressure"].set_value(telemetry.pressure)
+        self.gauges["Temperature"].set_value(telemetry.temperature)
+        
+        self.lat_label.setText(f"LAT {telemetry.latitude:.4f}°N")
+        self.lon_label.setText(f"LON {telemetry.longitude:.4f}°E")
+        self.fix_label.setText(f"FIX {telemetry.gps_fix}")
+        
+        self.graphs["Altitude"].add_data_point(telemetry.altitude)
+        self.graphs["Velocity"].add_data_point(telemetry.velocity)
+        self.graphs["Acceleration"].add_data_point(telemetry.acceleration)
+        self.graphs["Pressure"].add_data_point(telemetry.pressure)
+
+
+class CanSatDetailPage(QWidget):
+    """Detailed CanSat telemetry page"""
+    
+    def __init__(self, telemetry_interface: TelemetryDataInterface):
+        super().__init__()
+        self.telemetry_interface = telemetry_interface
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # Title
+        title_label = QLabel("CANSAT TELEMETRY DETAIL")
+        title_label.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
+        title_label.setStyleSheet(f"color: {Color.ACCENT_CYAN};")
+        layout.addWidget(title_label)
+        
+        # State bar
+        states = [s.value for s in CanSatState]
+        self.state_bar = StateBarWidget(states, Color.BLUE)
+        layout.addWidget(self.state_bar)
+        
+        # Main content
+        content_layout = QHBoxLayout()
+        
+        # Left: Gauges
+        gauge_container = QWidget()
+        gauge_layout = QGridLayout(gauge_container)
+        self.gauges = {
+            "Altitude": TelemetryGaugeWidget("Altitude", "m", Color.ACCENT_CYAN, 0, 2000),
+            "Velocity": TelemetryGaugeWidget("Velocity", "m/s", Color.MINT_GREEN, -100, 200),
+            "Pressure": TelemetryGaugeWidget("Pressure", "hPa", Color.AMBER, 600, 1200),
+            "Temperature": TelemetryGaugeWidget("Temperature", "°C", Color.BLUE, -40, 80),
+        }
+        for i, (name, gauge) in enumerate(self.gauges.items()):
+            gauge_layout.addWidget(gauge, i // 2, i % 2)
+        
+        content_layout.addWidget(gauge_container, 1)
+        
+        # Right: GPS Panel
+        gps_panel = self.create_gps_panel()
+        content_layout.addWidget(gps_panel, 1)
+        
+        layout.addLayout(content_layout)
+        
+        # Bottom: Graphs
+        graph_layout = QGridLayout()
+        self.graphs = {
+            "Altitude": TelemetryGraphWidget("Altitude", Color.ACCENT_CYAN),
+            "Velocity": TelemetryGraphWidget("Velocity", Color.MINT_GREEN),
+            "Pressure": TelemetryGraphWidget("Pressure", Color.AMBER),
+            "Temperature": TelemetryGraphWidget("Temperature", Color.BLUE),
+        }
+        for i, (name, graph) in enumerate(self.graphs.items()):
+            graph_layout.addWidget(graph, i // 2, i % 2)
+        layout.addLayout(graph_layout, 2)
+        
+        # Connect signals
+        telemetry_interface.cansat_updated.connect(self.update_data)
+    
+    def create_gps_panel(self) -> QWidget:
+        """Create GPS information panel"""
+        panel = QFrame()
+        panel.setStyleSheet(f"background-color: {Color.DARK_PANEL}; border: 1px solid {Color.BORDER};")
+        
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+        
+        title = QLabel("GPS POSITION")
+        title.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {Color.ACCENT_CYAN};")
+        layout.addWidget(title)
+        
+        self.lat_label = QLabel("LAT 0.0000°N")
+        self.lat_label.setFont(QFont("Consolas", 10))
+        self.lat_label.setStyleSheet("color: #FFFFFF;")
+        layout.addWidget(self.lat_label)
+        
+        self.lon_label = QLabel("LON 0.0000°E")
+        self.lon_label.setFont(QFont("Consolas", 10))
+        self.lon_label.setStyleSheet("color: #FFFFFF;")
+        layout.addWidget(self.lon_label)
+        
+        self.sat_label = QLabel("SATS 8")
+        self.sat_label.setFont(QFont("Consolas", 10))
+        self.sat_label.setStyleSheet("color: #FFFFFF;")
+        layout.addWidget(self.sat_label)
+        
+        self.fix_label = QLabel("FIX 3D")
+        self.fix_label.setFont(QFont("Consolas", 10))
+        self.fix_label.setStyleSheet(f"color: {Color.MINT_GREEN};")
+        layout.addWidget(self.fix_label)
+        
+        layout.addStretch()
+        
+        return panel
+    
+    def update_data(self, telemetry: CanSatTelemetry):
+        """Update displayed data"""
+        self.state_bar.set_state(telemetry.state.value)
+        
+        self.gauges["Altitude"].set_value(telemetry.altitude)
+        self.gauges["Velocity"].set_value(telemetry.velocity)
+        self.gauges["Pressure"].set_value(telemetry.pressure)
+        self.gauges["Temperature"].set_value(telemetry.temperature)
+        
+        self.lat_label.setText(f"LAT {telemetry.latitude:.4f}°N")
+        self.lon_label.setText(f"LON {telemetry.longitude:.4f}°E")
+        self.sat_label.setText(f"SATS {telemetry.satellite_count}")
+        self.fix_label.setText(f"FIX {telemetry.fix_type}")
+        
+        self.graphs["Altitude"].add_data_point(telemetry.altitude)
+        self.graphs["Velocity"].add_data_point(telemetry.velocity)
+        self.graphs["Pressure"].add_data_point(telemetry.pressure)
+        self.graphs["Temperature"].add_data_point(telemetry.temperature)
+
+
+# ============================================================================
+# MAIN APPLICATION
+# ============================================================================
+
+class GroundStationApp(QMainWindow):
+    """Main ground station application with polished UI"""
+    
+    def __init__(self):
+        super().__init__()
+        
+        self.setWindowTitle("🚀 CANSAT & ROCKET GROUND STATION 🛰️")
+        self.setMinimumSize(1500, 950)
+        self.setWindowIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+        
+        # Position window in center of screen
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_geometry = screen.geometry()
+            x = (screen_geometry.width() - 1500) // 2
+            y = (screen_geometry.height() - 950) // 2
+            self.move(x, y)
+        
+        # Create telemetry data interface (receives data from backend)
+        self.telemetry_interface = TelemetryDataInterface()
+        
+        # Main container
+        main_widget = QWidget()
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Status bar
+        self.status_bar = StatusBarWidget()
+        main_layout.addWidget(self.status_bar)
+        
+        # Content area
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        
+        # Sidebar
+        self.sidebar = SidebarWidget()
+        self.sidebar.page_selected.connect(self.on_page_selected)
+        content_layout.addWidget(self.sidebar)
+        
+        # Pages container
+        self.pages = QStackedWidget()
+        
+        # Create pages with telemetry interface
+        self.overview_page = OverviewPage(self.telemetry_interface)
+        self.rocket_page = RocketDetailPage(self.telemetry_interface)
+        self.cansat_page = CanSatDetailPage(self.telemetry_interface)
+        
+        self.pages.addWidget(self.overview_page)  # 0
+        self.pages.addWidget(self.rocket_page)     # 1
+        self.pages.addWidget(self.cansat_page)     # 2
+        
+        content_layout.addWidget(self.pages)
+        
+        # Add to main layout
+        main_layout.addLayout(content_layout)
+        
+        self.setCentralWidget(main_widget)
+        
+        # Set dark theme with gradient background
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {Color.DARK_BG}, stop:1 {Color.DARK_PANEL});
+            }}
+        """)
+        
+        # Update status bar timer
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_status)
+        self.timer.start(500)  # Update every 500ms
+    
+    def on_page_selected(self, page_id: int):
+        """Handle page selection"""
+        self.pages.setCurrentIndex(page_id)
+        self.sidebar.highlight_button(page_id)
+    
+    def update_status(self):
+        """Update status bar information"""
+        self.status_bar.update_status(
+            self.telemetry_interface.rocket.battery,
+            self.telemetry_interface.rocket.signal,
+            self.telemetry_interface.cansat.battery,
+            self.telemetry_interface.cansat.signal,
+            self.telemetry_interface.elapsed_time
+        )
+    
+    def receive_rocket_telemetry(self, telemetry: RocketTelemetry):
+        """Receive rocket telemetry from backend"""
+        self.telemetry_interface.update_rocket_telemetry(telemetry)
+    
+    def receive_cansat_telemetry(self, telemetry: CanSatTelemetry):
+        """Receive CanSat telemetry from backend"""
+        self.telemetry_interface.update_cansat_telemetry(telemetry)
+    
+    def receive_elapsed_time(self, elapsed_seconds: float):
+        """Receive mission elapsed time from backend"""
+        self.telemetry_interface.update_elapsed_time(elapsed_seconds)
+
+
+def main():
+    """Main entry point"""
+    import os
+    import traceback
+    
+    try:
+        # Set Qt plugin path for macOS
+        if sys.platform == "darwin":
+            os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/PyQt6/Qt6/plugins"
+        
+        app = QApplication(sys.argv)
+        app.setApplicationName("Ground Station")
+        
+        # Create and show main window
+        window = GroundStationApp()
+        window.activateWindow()
+        window.raise_()
+        window.show()
+        
+        # Start application
+        sys.exit(app.exec())
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to start application: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
