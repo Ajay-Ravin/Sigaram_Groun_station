@@ -380,26 +380,16 @@ class EventLogWidget(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(Style.GLASSMORPHISM_PANEL)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 6, 8, 6)
-        outer.setSpacing(2)
+        self.outer = QVBoxLayout(self)
+        self.outer.setContentsMargins(8, 6, 8, 6)
+        self.outer.setSpacing(4)
 
         title = QLabel("MISSION EVENTS")
         title.setStyleSheet(Style.LABEL_TITLE)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer.addWidget(title)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        self._container = QWidget()
-        self._layout = QVBoxLayout(self._container)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(2)
-        self._layout.addStretch()
-        scroll.setWidget(self._container)
-        outer.addWidget(scroll)
+        self.outer.addWidget(title)
 
     def add_event(self, ev):
         mins = int(ev.time) // 60
@@ -407,8 +397,9 @@ class EventLogWidget(QFrame):
         lbl = QLabel(f"T+{mins:02d}:{secs:02d}  {ev.label}")
         lbl.setStyleSheet(f"color: {ev.color}; font-size: 10px; font-family: Menlo;")
         lbl.setWordWrap(True)
-        # Insert at top (before stretch)
-        self._layout.insertWidget(0, lbl)
+        # Insert below the title (index 1)
+        self.outer.insertWidget(1, lbl)
+        self.updateGeometry()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -553,8 +544,15 @@ class StatusHeader(QWidget):
         self._timer._val_label.setText(f"{m:02d}:{s:02d}")
 
         state = rocket.state.value
-        col = Color.GREEN if state in ("COAST", "APOGEE", "DESC") else (
-            Color.RED if state in ("IGN", "BOOST") else Color.AMBER)
+        state_colors = {
+            "Boot": Color.TEXT_DIM,
+            "Pre_launch": Color.AMBER,
+            "ascent": Color.RED,
+            "Deployment": Color.CYAN,
+            "Descent": Color.BLUE,
+            "Impact/recovery": Color.GREEN
+        }
+        col = state_colors.get(state, Color.AMBER)
         self._mission._val_label.setText(state)
         self._mission._val_label.setStyleSheet(f"color: {col}; font: bold 13px 'Menlo';")
 

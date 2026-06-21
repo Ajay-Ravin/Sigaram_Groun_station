@@ -1,0 +1,10 @@
+{
+    "simulator_enabled": true,
+    "simulation_hz": 10.0,
+    "ws_host": "localhost",
+    "ws_port": 8765,
+    "rocket_port": "COM3",
+    "rocket_baud": 115200,
+    "cansat_port": "COM4",
+    "cansat_baud": 115200
+}

@@ -20,7 +20,7 @@ class RocketSimulator:
         self.acceleration = 0.0
         self.temperature = 22.0
         self.pressure = 101325.0  # Pa
-        self.phase = "PRE"
+        self.phase = "Boot"
         self.max_alt = 0.0
         self.lat = 34.0522
         self.lon = -118.2437
@@ -41,30 +41,37 @@ class RocketSimulator:
         self.t += dt
         n = random.gauss(0, 0.3)
 
-        if self.t < self.t_ign:
-            self.phase = "PRE"
+        if self.t < 2.0:
+            self.phase = "Boot"
+            self.acceleration = self.velocity = self.altitude = 0
+        elif self.t < self.t_ign:
+            self.phase = "Pre_launch"
             self.acceleration = self.velocity = self.altitude = 0
         elif self.t < self.t_burnout:
-            self.phase = "IGN" if self.t < self.t_ign + 0.5 else "BOOST"
+            self.phase = "ascent"
             f = (self.t - self.t_ign) / (self.t_burnout - self.t_ign)
             self.acceleration = self.thrust_accel * (1 - 0.3 * f) - 9.81
             self.velocity += self.acceleration * dt
             self.altitude += self.velocity * dt
         elif self.t < self.t_apogee:
-            self.phase = "COAST"
+            self.phase = "ascent"
             drag = self.drag_coeff * self.velocity ** 2 * (1 if self.velocity > 0 else -1)
             self.acceleration = -9.81 - drag
             self.velocity += self.acceleration * dt
             self.altitude += self.velocity * dt
-            if self.velocity <= 0 and self.altitude >= self.max_alt * 0.95:
-                self.phase = "APOGEE"
+        elif self.t < self.t_apogee + 3.0:
+            self.phase = "Deployment"
+            self.velocity = max(-25.0, self.velocity - 5.0 * dt)
+            self.altitude += self.velocity * dt
+            self.acceleration = -2.0 + n
         else:
-            self.phase = "DESC"
+            self.phase = "Descent"
             self.velocity = max(-25.0, self.velocity - 5.0 * dt)
             self.altitude += self.velocity * dt
             self.acceleration = -2.0 + n
             if self.altitude <= 0:
                 self.altitude = self.velocity = self.acceleration = 0
+                self.phase = "Impact/recovery"
 
         self.max_alt = max(self.max_alt, self.altitude)
         self.altitude = max(0, self.altitude)
@@ -77,15 +84,16 @@ class RocketSimulator:
         self.signal = -55 - self.altitude * 0.003 + random.gauss(0, 2)
 
         # Attitude simulation
-        if self.phase == "BOOST":
-            self.pitch = 85 + random.gauss(0, 2)
-            self.roll += random.gauss(0, 0.5)
-            self.yaw += random.gauss(0, 0.3)
-        elif self.phase == "COAST":
-            self.pitch = 85 - (self.t - self.t_burnout) * 3 + random.gauss(0, 1)
-            self.roll += random.gauss(0, 1)
-            self.yaw += random.gauss(0, 0.5)
-        elif self.phase == "DESC":
+        if self.phase == "ascent":
+            if self.t < self.t_burnout:
+                self.pitch = 85 + random.gauss(0, 2)
+                self.roll += random.gauss(0, 0.5)
+                self.yaw += random.gauss(0, 0.3)
+            else:
+                self.pitch = 85 - (self.t - self.t_burnout) * 3 + random.gauss(0, 1)
+                self.roll += random.gauss(0, 1)
+                self.yaw += random.gauss(0, 0.5)
+        elif self.phase in ("Deployment", "Descent"):
             self.pitch *= 0.98
             self.roll *= 0.95
             self.yaw += random.gauss(0, 0.2)

@@ -9,12 +9,12 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 
 class RocketState(Enum):
-    PRE = "PRE"
-    IGN = "IGN"
-    BOOST = "BOOST"
-    COAST = "COAST"
-    APOGEE = "APOGEE"
-    DESC = "DESC"
+    BOOT = "Boot"
+    PRE_LAUNCH = "Pre_launch"
+    ASCENT = "ascent"
+    DEPLOYMENT = "Deployment"
+    DESCENT = "Descent"
+    IMPACT_RECOVERY = "Impact/recovery"
 
 
 class CanSatState(Enum):
@@ -41,7 +41,7 @@ class RocketTelemetry:
     roll: float = 0.0
     pitch: float = 0.0
     yaw: float = 0.0
-    state: RocketState = RocketState.PRE
+    state: RocketState = RocketState.BOOT
 
 
 @dataclass
@@ -84,16 +84,17 @@ class TelemetryDataInterface(QObject):
         self.rocket_history: List[RocketTelemetry] = []
         self.cansat_history: List[CanSatTelemetry] = []
         self.events: List[MissionEvent] = []
-        self._last_rocket_state = RocketState.PRE
+        self._last_rocket_state = RocketState.BOOT
         self._last_cansat_state = CanSatState.IDLE
 
     # --- state-change event labels ---
     _ROCKET_EVENTS = {
-        RocketState.IGN: ("IGNITION DETECTED", "#FFB800"),
-        RocketState.BOOST: ("BOOST PHASE", "#FF3344"),
-        RocketState.COAST: ("MOTOR BURNOUT - COAST", "#00D4FF"),
-        RocketState.APOGEE: ("APOGEE REACHED", "#00FF88"),
-        RocketState.DESC: ("DESCENT PHASE", "#3388FF"),
+        RocketState.BOOT: ("SYSTEM BOOT", "#6088AA"),
+        RocketState.PRE_LAUNCH: ("PRE-LAUNCH READY", "#FFB800"),
+        RocketState.ASCENT: ("ASCENT PHASE", "#FF3344"),
+        RocketState.DEPLOYMENT: ("DEPLOYMENT DETECTED", "#00FF88"),
+        RocketState.DESCENT: ("DESCENT PHASE", "#3388FF"),
+        RocketState.IMPACT_RECOVERY: ("IMPACT / RECOVERY ACTIVE", "#00FF88"),
     }
     _CANSAT_EVENTS = {
         CanSatState.ARMED: ("CANSAT ARMED", "#FFB800"),
